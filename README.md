@@ -1,4 +1,4 @@
-# MuHgManager (Rust)
+# ManaHg
 
 A fast, native GUI tool for managing multiple Mercurial (Hg) repositories, written in Rust with FLTK.
 
