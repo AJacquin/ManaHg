@@ -31,7 +31,7 @@ cargo run
 cargo build --release
 ```
 
-The compiled binary will be in `target/release/rust_impl.exe`.
+The compiled binary will be in `target/release/ManaHg.exe`.
 
 ## Usage
 
