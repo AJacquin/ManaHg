@@ -742,31 +742,36 @@ fn main() {
                 }
                 Message::Commit => {
                     let sel = get_selected_repos(&browser, &repositories.lock().unwrap());
-                    if sel.len() != 1 {
-                         dialog::alert(200, 200, "Please select exactly one repository for commit.");
+                    if sel.is_empty() {
+                         dialog::alert(200, 200, "Please select at least one repository for commit.");
                          continue;
                     }
-                    let repo = sel[0].clone();
+
                     if let Some(msg_txt) = dialog::input(200, 200, "Commit message:", "") {
                         if !msg_txt.is_empty() {
                             let sender = s.clone();
-                            sender.send(Message::SetStatus(repo.path.clone(), "Committing...".to_string()));
                             
-                            thread::spawn(move || {
-                                let mut updated_repo = repo.clone();
-                                let res = updated_repo.commit(&msg_txt);
-                                updated_repo.refresh();
+                            for repo in &sel {
+                                 sender.send(Message::SetStatus(repo.path.clone(), "Committing...".to_string()));
+                            }
 
-                                match res {
-                                    Ok(_) => {
-                                         updated_repo.last_status = "Committed".to_string();
-                                         sender.send(Message::RepoUpdated(updated_repo));
-                                    },
-                                    Err(e) => {
-                                         updated_repo.last_status = format!("Error: {}", e);
-                                         sender.send(Message::RepoUpdated(updated_repo));
+                            thread::spawn(move || {
+                                sel.par_iter().for_each(|repo| {
+                                    let mut updated_repo = repo.clone();
+                                    let res = updated_repo.commit(&msg_txt);
+                                    updated_repo.refresh();
+
+                                    match res {
+                                        Ok(_) => {
+                                             updated_repo.last_status = "Committed".to_string();
+                                             sender.send(Message::RepoUpdated(updated_repo));
+                                        },
+                                        Err(e) => {
+                                             updated_repo.last_status = format!("Error: {}", e);
+                                             sender.send(Message::RepoUpdated(updated_repo));
+                                        }
                                     }
-                                }
+                                });
                                 sender.send(Message::SetGlobalStatus("Ready".into()));
                             });
                         }
