@@ -6,7 +6,7 @@ use fltk::{
     prelude::*,
     window::Window,
     frame::Frame,
-    group::{Pack, Group},
+    group::{Pack, Group, Flex},
     menu::{SysMenuBar, MenuFlag},
 };
 use fltk_theme::{WidgetTheme, ThemeType, WidgetScheme, SchemeType};
@@ -85,6 +85,8 @@ enum Message {
     PullCurrent,
     UpdateLatest,
     Commit,
+    OpenSwitchBranch,
+    SwitchBranch(String),
     Refresh,
     RefreshAll,
     AddFolder,
@@ -199,6 +201,13 @@ fn main() {
         s.clone(),
         Message::UpdateLatest,
     );
+     menu.add_emit(
+        "&Action/Switch Branch...\t",
+        Shortcut::None,
+        MenuFlag::Normal,
+        s.clone(),
+        Message::OpenSwitchBranch,
+    );
     menu.add_emit(
         "&Action/Commit...\t",
         Shortcut::None,
@@ -234,11 +243,10 @@ fn main() {
     });
 
     // Main Vertical Layout (Shifted down for menu)
-    let mut vpack = Pack::new(0, 30, 1000, 720, "");
-    vpack.set_spacing(0);
-
+    let mut flex = Flex::new(0, 30, 1000, 720, "").column();
+    
     // Toolbar (Horizontal)
-    let mut toolbar = Group::new(0, 0, 1000, 40, "");
+    let mut toolbar = Group::default().with_size(1000, 40);
     toolbar.set_frame(FrameType::FlatBox);
     let mut btn_refresh = Button::new(10, 5, 90, 30, "@refresh"); 
     btn_refresh.set_tooltip("Refresh selected repositories");
@@ -248,15 +256,18 @@ fn main() {
     btn_pull.set_tooltip("Pull all branches for selected repositories");
     let mut btn_pull_curr = Button::new(690, 5, 90, 30, "Pull Cur. Br.");
     btn_pull_curr.set_tooltip("Pull current branch for selected repositories");
-    let mut btn_update = Button::new(790, 5, 90, 30, "Update");
+    let mut btn_update = Button::new(790, 5, 80, 30, "Update");
     btn_update.set_tooltip("Update to latest commit for selected repositories");
-    let mut btn_commit = Button::new(890, 5, 90, 30, "Commit");
-    btn_commit.set_tooltip("Commit pending changes for selected repositories");
+    let mut btn_switch = Button::new(880, 5, 50, 30, "Switch");
+    btn_switch.set_tooltip("Switch branch");
+    let mut btn_commit = Button::new(940, 5, 50, 30, "Commit");
+    btn_commit.set_tooltip("Commit pending changes");
     
     toolbar.end();
+    flex.fixed(&toolbar, 40);
 
     // Header Row (Buttons)
-    let header_group = Group::new(0, 0, 1000, 24, "");
+    let header_group = Group::default().with_size(1000, 24);
     let col_widths = [450, 150, 80, 80, 100, 140]; // Total 1000
     let col_names = ["Path", "Branch", "Rev", "Mod", "Phase", "Status"];
     let mut x_off = 0;
@@ -268,9 +279,10 @@ fn main() {
         x_off += w;
     }
     header_group.end();
+    flex.fixed(&header_group, 24);
 
     // Repo List
-    let mut browser = HoldBrowser::new(0, 0, 1000, 632, ""); 
+    let mut browser = HoldBrowser::default(); 
     
     browser.set_column_char('\t');
     browser.set_column_widths(&col_widths); 
@@ -280,16 +292,16 @@ fn main() {
     // browser.add("Path\tBranch\tRev\tMod\tPhase\tStatus"); // Removed header line
 
     // Status Bar
-    let mut status_bar = Frame::new(0, 0, 1000, 24, "Ready");
+    let mut status_bar = Frame::default().with_label("Ready");
     status_bar.set_frame(FrameType::FlatBox);
     status_bar.set_align(fltk::enums::Align::Left | fltk::enums::Align::Inside);
     status_bar.set_label_color(Color::Gray0);
+    flex.fixed(&status_bar, 24);
     
-    vpack.end();
-    vpack.resizable(&browser);
+    flex.end();
     
     // Resize handling
-    wind.resizable(&vpack);
+    wind.resizable(&flex);
     wind.show();
 
     // App State
@@ -301,6 +313,7 @@ fn main() {
     btn_pull.emit(s.clone(), Message::PullAll);
     btn_pull_curr.emit(s.clone(), Message::PullCurrent);
     btn_update.emit(s.clone(), Message::UpdateLatest);
+    btn_switch.emit(s.clone(), Message::OpenSwitchBranch);
     btn_commit.emit(s.clone(), Message::Commit);
 
     let cloned_repos = config.lock().unwrap().repositories.clone();
@@ -612,6 +625,120 @@ fn main() {
                         });
                         sender.send(Message::SetGlobalStatus("Ready".into()));
                     });
+                }
+                Message::OpenSwitchBranch => {
+                    let sel = get_selected_repos(&browser, &repositories.lock().unwrap());
+                    if sel.is_empty() {
+                         status_bar.set_label("Select repositories to switch branch");
+                         continue;
+                    }
+                    
+                    status_bar.set_label("Analyzing branches...");
+                    
+                    // Retrieve all branches with counts
+                    use std::collections::HashMap;
+                    
+                    let mut branch_counts: HashMap<String, usize> = HashMap::new();
+                    let total_sel = sel.len();
+                    
+                    for r in &sel {
+                         if let Ok(branches) = r.get_all_branches() {
+                             for b in branches {
+                                 *branch_counts.entry(b).or_insert(0) += 1;
+                             }
+                         }
+                    }
+                    
+                    let mut sorted_branches: Vec<(String, usize)> = branch_counts.into_iter().collect();
+                    // Sort by count (descending) then name (ascending)
+                    sorted_branches.sort_by(|a, b| {
+                        b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0))
+                    });
+
+                    let branch_names: Vec<String> = sorted_branches.iter().map(|(n, _)| n.clone()).collect();
+                    
+                    // Show Dialog
+                    let mut dialog = Window::default().with_size(300, 200).with_label("Switch Branch");
+                    dialog.set_border(true);
+                    let mut pack = Pack::new(10, 10, 280, 180, "");
+                    pack.set_spacing(10);
+                    
+                    pack.add(&Frame::default().with_size(0, 20).with_label(&format!("Select branch (from {} repos):", total_sel)));
+                    let mut choice = fltk::menu::Choice::default().with_size(0, 30);
+                    for (name, count) in &sorted_branches {
+                        // Escape slashes in branch name to avoid FLTK interpreting them as submenus
+                        let safe_name = name.replace("/", "\\/");
+                        choice.add_choice(&format!("{} ({})", safe_name, count));
+                    }
+                    if !sorted_branches.is_empty() {
+                        choice.set_value(0);
+                    }
+                    
+                    pack.add(&Frame::default().with_size(0, 20).with_label("Or type branch name:"));
+                    let input = fltk::input::Input::default().with_size(0, 30);
+                    
+                    let btn_row = Flex::default().with_size(0, 30).row();
+                    let mut btn_cancel = Button::default().with_label("Close");
+                    let mut btn_ok = Button::default().with_label("Switch");
+                    btn_row.end();
+                    
+                    pack.end();
+                    dialog.end();
+                    dialog.make_modal(true);
+                    dialog.show();
+                    
+                    let s_clone = s.clone();
+                    let mut d_clone = dialog.clone();
+                    btn_cancel.set_callback(move |_| d_clone.hide());
+                    
+                    let mut d_clone2 = dialog.clone();
+                    let names_clone = branch_names.clone();
+
+                    btn_ok.set_callback(move |_| {
+                        let idx = choice.value();
+                        let target = if !input.value().is_empty() {
+                            input.value()
+                        } else if idx >= 0 && (idx as usize) < names_clone.len() {
+                                names_clone[idx as usize].clone()
+                        } else {
+                            String::new()
+                        };
+                        
+                        if !target.is_empty() {
+                            s_clone.send(Message::SwitchBranch(target));
+                            d_clone2.hide();
+                        }
+                    });
+                }
+                Message::SwitchBranch(target_branch) => {
+                     let sel = get_selected_repos(&browser, &repositories.lock().unwrap());
+                     if sel.is_empty() { continue; }
+                     
+                     status_bar.set_label(&format!("Switching to {}...", target_branch));
+                     let sender = s.clone();
+                     
+                     for r in &sel {
+                         sender.send(Message::SetStatus(r.path.clone(), "Switching...".to_string()));
+                     }
+                     
+                     thread::spawn(move || {
+                         sel.par_iter().for_each(|repo| {
+                             let mut r = repo.clone();
+                             let res = r.update_branch(&target_branch);
+                             r.refresh();
+                             match res {
+                                 Ok(_) => {
+                                     r.last_status = "Switched".to_string();
+                                     sender.send(Message::RepoUpdated(r));
+                                 }
+                                 Err(e) => {
+                                     r.last_status = format!("Error: {}", e);
+                                     sender.send(Message::RepoUpdated(r));
+                                 }
+                             }
+                         });
+                         sender.send(Message::SetGlobalStatus("Ready".into()));
+                     });
                 }
                 Message::Commit => {
                     let sel = get_selected_repos(&browser, &repositories.lock().unwrap());
