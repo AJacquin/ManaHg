@@ -13,7 +13,7 @@ use fltk::{
     prelude::*,
     window::Window,
 };
-use fltk_theme::{SchemeType, ThemeType, WidgetScheme, WidgetTheme};
+use fltk_theme::{color_themes, ColorMap, ColorTheme, SchemeType, ThemeType, WidgetScheme, WidgetTheme};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
@@ -37,7 +37,12 @@ fn default_show_full_path() -> bool {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct AppConfig {
     repositories: Vec<PathBuf>,
+    #[serde(default)]
     theme_idx: usize,
+    #[serde(default)]
+    scheme_idx: usize,
+    #[serde(default)]
+    color_idx: usize,
     #[serde(default = "default_show_full_path")]
     show_full_path: bool,
 }
@@ -46,7 +51,9 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             repositories: Vec::new(),
-            theme_idx: 0, // Default to Greybird (idx 0 in our list)
+            theme_idx: 0, // Default to Greybird
+            scheme_idx: 0, // Fluent
+            color_idx: 0, // None
             show_full_path: true,
         }
     }
@@ -66,6 +73,8 @@ fn load_config() -> AppConfig {
                 return AppConfig {
                     repositories: paths,
                     theme_idx: 0,
+                    scheme_idx: 0,
+                    color_idx: 0,
                     show_full_path: true,
                 };
             }
@@ -74,11 +83,19 @@ fn load_config() -> AppConfig {
     AppConfig::default()
 }
 
-fn save_config(repos: &[Repository], theme_idx: usize, show_full_path: bool) {
+fn save_config(
+    repos: &[Repository],
+    theme_idx: usize,
+    scheme_idx: usize,
+    color_idx: usize,
+    show_full_path: bool,
+) {
     let paths: Vec<PathBuf> = repos.iter().map(|r| r.path.clone()).collect();
     let cfg = AppConfig {
         repositories: paths,
         theme_idx,
+        scheme_idx,
+        color_idx,
         show_full_path,
     };
     match std::fs::File::create(CONFIG_FILE) {
@@ -111,7 +128,7 @@ enum Message {
     AddFolder,
     RemoveSelected,
     OpenPreferences,
-    UpdatePreferences(usize, bool),
+    UpdatePreferences(usize, usize, usize, bool),
     SelectAll,
     Copy,
     OpenTortoiseHg,
@@ -133,12 +150,38 @@ struct SortState {
     order: SortOrder,
 }
 //...
-const THEMES: &[(&str, ThemeType)] = &[
-    ("Greybird", ThemeType::Greybird),
-    ("Dark", ThemeType::Dark),
-    ("HighContrast", ThemeType::HighContrast),
-    ("Blue", ThemeType::Blue),
-    ("Metro", ThemeType::Metro),
+const WIDGET_THEMES: &[(&str, Option<ThemeType>)] = &[
+    ("Greybird", Some(ThemeType::Greybird)),
+    ("Dark", Some(ThemeType::Dark)),
+    ("HighContrast", Some(ThemeType::HighContrast)),
+    ("Blue", Some(ThemeType::Blue)),
+    ("Metro", Some(ThemeType::Metro)),
+    ("None", None),
+];
+
+const WIDGET_SCHEMES: &[(&str, Option<SchemeType>)] = &[
+    ("Fluent", Some(SchemeType::Fluent)),
+    ("Clean", Some(SchemeType::Clean)),
+    ("Aqua", Some(SchemeType::Aqua)),
+    ("Sweet", Some(SchemeType::Sweet)),
+    ("None", None),
+];
+
+const COLOR_THEMES: &[(&str, Option<&[ColorMap]>)] = &[
+    ("None", None),
+    ("Black", Some(color_themes::BLACK_THEME)),
+    ("Dark", Some(color_themes::DARK_THEME)),
+    ("Tan", Some(color_themes::TAN_THEME)),
+    ("Shake", Some(color_themes::SHAKE_THEME)),
+    ("Gruvbox Dark", Some(&color_themes::fleet::GRUVBOX_DARK)),
+    ("Dracula", Some(&color_themes::fleet::DRACULA)),
+    ("Purple Dusk", Some(&color_themes::fleet::PURPLE_DUSK)),
+    ("Monokai", Some(&color_themes::fleet::MONOKAI)),
+    ("Cyberpunk", Some(&color_themes::fleet::CYBERPUNK)),
+    ("Solarized Dark", Some(&color_themes::fleet::SOLARIZED_DARK)),
+    ("Material Dark", Some(&color_themes::fleet::MATERIAL_DARK)),
+    ("Gruvbox Light", Some(&color_themes::fleet::GRUVBOX_LIGHT)),
+    ("Solarized Light", Some(&color_themes::fleet::SOLARIZED_LIGHT)),
 ];
 
 fn main() {
@@ -147,15 +190,25 @@ fn main() {
     // Load config early
     let config = Arc::new(Mutex::new(load_config()));
     let initial_theme_idx = config.lock().unwrap().theme_idx;
+    let initial_scheme_idx = config.lock().unwrap().scheme_idx;
+    let initial_color_idx = config.lock().unwrap().color_idx;
     let mut current_show_full_path = config.lock().unwrap().show_full_path;
 
-    let widget_scheme = WidgetScheme::new(SchemeType::Fluent);
-    widget_scheme.apply();
-
-    // Apply saved theme
-    if initial_theme_idx < THEMES.len() {
-        let widget_theme = WidgetTheme::new(THEMES[initial_theme_idx].1);
-        widget_theme.apply();
+    // Apply saved themes/schemes in order
+    if initial_theme_idx < WIDGET_THEMES.len() {
+        if let Some(t) = WIDGET_THEMES[initial_theme_idx].1 {
+            WidgetTheme::new(t).apply();
+        }
+    }
+    if initial_scheme_idx < WIDGET_SCHEMES.len() {
+        if let Some(s) = WIDGET_SCHEMES[initial_scheme_idx].1 {
+            WidgetScheme::new(s).apply();
+        }
+    }
+    if initial_color_idx < COLOR_THEMES.len() {
+        if let Some(c) = COLOR_THEMES[initial_color_idx].1 {
+            ColorTheme::new(c).apply();
+        }
     }
 
     let mut wind = Window::default().with_size(1000, 750).with_label("ManaHg");
@@ -471,6 +524,8 @@ fn main() {
     }
 
     let mut current_theme_idx = initial_theme_idx;
+    let mut current_scheme_idx = initial_scheme_idx;
+    let mut current_color_idx = initial_color_idx;
 
     // Initial check: if args, scan them
     let args: Vec<String> = std::env::args().collect();
@@ -516,7 +571,7 @@ fn main() {
                     }
                     repos.sort_by(|a, b| a.path.cmp(&b.path));
 
-                    save_config(&repos, current_theme_idx, current_show_full_path);
+                    save_config(&repos, current_theme_idx, current_scheme_idx, current_color_idx, current_show_full_path);
 
                     update_browser(&mut browser, &repos, current_show_full_path);
                     status_bar.set_label(&format!("Found {} repositories", repos.len()));
@@ -643,29 +698,53 @@ fn main() {
                     repos.retain(|r| !selected.iter().any(|sel| sel.path == r.path));
 
                     if repos.len() != len_before {
-                        save_config(&repos, current_theme_idx, current_show_full_path);
+                        save_config(&repos, current_theme_idx, current_scheme_idx, current_color_idx, current_show_full_path);
                         update_browser(&mut browser, &repos, current_show_full_path);
                     }
                 }
                 Message::OpenPreferences => {
                     let mut prefs_win = Window::default()
-                        .with_size(300, 200)
+                        .with_size(300, 350)
                         .with_label("Preferences");
                     prefs_win.set_border(true);
-                    let mut pack = Pack::new(10, 10, 280, 180, "");
+                    let mut pack = Pack::new(10, 10, 280, 330, "");
                     pack.set_spacing(10);
 
+                    // Widget Theme
                     pack.add(
                         &Frame::default()
-                            .with_size(0, 30)
-                            .with_label("Select a theme:"),
+                            .with_size(0, 20)
+                            .with_label("Widget Theme (Color+Scheme):"),
                     );
-
-                    let mut choice = fltk::menu::Choice::default().with_size(0, 30);
-                    for (name, _) in THEMES {
-                        choice.add_choice(name);
+                    let mut theme_choice = fltk::menu::Choice::default().with_size(0, 30);
+                    for (name, _) in WIDGET_THEMES {
+                        theme_choice.add_choice(name);
                     }
-                    choice.set_value(current_theme_idx as i32);
+                    theme_choice.set_value(current_theme_idx as i32);
+
+                    // Widget Scheme
+                    pack.add(
+                        &Frame::default()
+                            .with_size(0, 20)
+                            .with_label("Widget Scheme (Drawing):"),
+                    );
+                    let mut scheme_choice = fltk::menu::Choice::default().with_size(0, 30);
+                    for (name, _) in WIDGET_SCHEMES {
+                        scheme_choice.add_choice(name);
+                    }
+                    scheme_choice.set_value(current_scheme_idx as i32);
+
+                    // Color Theme
+                    pack.add(
+                        &Frame::default()
+                            .with_size(0, 20)
+                            .with_label("Color Theme (Palette):"),
+                    );
+                    let mut color_choice = fltk::menu::Choice::default().with_size(0, 30);
+                    for (name, _) in COLOR_THEMES {
+                        color_choice.add_choice(name);
+                    }
+                    color_choice.set_value(current_color_idx as i32);
 
                     let check_path = fltk::button::CheckButton::default()
                         .with_size(0, 30)
@@ -687,12 +766,16 @@ fn main() {
                     prefs_win.show();
 
                     let sender = s.clone();
-                    let choice_c = choice.clone();
+                    let theme_c = theme_choice.clone();
+                    let scheme_c = scheme_choice.clone();
+                    let color_c = color_choice.clone();
                     let check_path_c = check_path.clone();
 
                     btn_ok.set_callback(move |_| {
                         sender.send(Message::UpdatePreferences(
-                            choice_c.value() as usize,
+                            theme_c.value() as usize,
+                            scheme_c.value() as usize,
+                            color_c.value() as usize,
                             check_path_c.is_checked(),
                         ));
                     });
@@ -700,27 +783,51 @@ fn main() {
                     let mut pw_c = prefs_win.clone();
                     btn_close.set_callback(move |_| pw_c.hide());
                 }
-                Message::UpdatePreferences(idx, show_full) => {
+                Message::UpdatePreferences(t_idx, s_idx, c_idx, show_full) => {
                     let mut config_changed = false;
 
-                    if idx < THEMES.len() && idx != current_theme_idx {
-                        current_theme_idx = idx;
-                        let widget_theme = WidgetTheme::new(THEMES[idx].1);
-                        widget_theme.apply();
-                        app::redraw();
+                    // Update indices if valid
+                    if t_idx < WIDGET_THEMES.len() && t_idx != current_theme_idx {
+                        current_theme_idx = t_idx;
                         config_changed = true;
+                    }
+                    if s_idx < WIDGET_SCHEMES.len() && s_idx != current_scheme_idx {
+                        current_scheme_idx = s_idx;
+                        config_changed = true;
+                    }
+                    if c_idx < COLOR_THEMES.len() && c_idx != current_color_idx {
+                        current_color_idx = c_idx;
+                        config_changed = true;
+                    }
+
+                    if config_changed {
+                        // Re-apply all in order
+                        if current_theme_idx < WIDGET_THEMES.len() {
+                            if let Some(t) = WIDGET_THEMES[current_theme_idx].1 {
+                                WidgetTheme::new(t).apply();
+                            }
+                        }
+                        if current_scheme_idx < WIDGET_SCHEMES.len() {
+                            if let Some(s) = WIDGET_SCHEMES[current_scheme_idx].1 {
+                                WidgetScheme::new(s).apply();
+                            }
+                        }
+                        if current_color_idx < COLOR_THEMES.len() {
+                            if let Some(c) = COLOR_THEMES[current_color_idx].1 {
+                                ColorTheme::new(c).apply();
+                            }
+                        }
+                        app::redraw();
                     }
 
                     if show_full != current_show_full_path {
                         current_show_full_path = show_full;
                         config_changed = true;
-                        // Trigger browser update immediately
-                        // We do it below anyway
                     }
 
                     if config_changed {
                         let repos = app_state.lock().unwrap();
-                        save_config(&repos, current_theme_idx, current_show_full_path);
+                        save_config(&repos, current_theme_idx, current_scheme_idx, current_color_idx, current_show_full_path);
                         update_browser(&mut browser, &repos, current_show_full_path);
                     }
                 }
