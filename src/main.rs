@@ -104,6 +104,8 @@ enum Message {
     Commit,
     OpenSwitchBranch,
     SwitchBranch(String),
+    OpenUpdateTag,
+    DoUpdateTag(String),
     Refresh,
     RefreshAll,
     AddFolder,
@@ -225,7 +227,7 @@ fn main() {
         Message::PullCurrent,
     );
     menu.add_emit(
-        "&Action/Update To Latest\t",
+        "&Action/Update to Latest\t",
         Shortcut::None,
         MenuFlag::Normal,
         s.clone(),
@@ -237,6 +239,13 @@ fn main() {
         MenuFlag::Normal,
         s.clone(),
         Message::OpenSwitchBranch,
+    );
+    menu.add_emit(
+        "&Action/Update to Tag...\t",
+        Shortcut::None,
+        MenuFlag::Normal,
+        s.clone(),
+        Message::OpenUpdateTag,
     );
     menu.add_emit(
         "&Action/Commit...\t",
@@ -372,21 +381,28 @@ fn main() {
         Message::UpdateLatest,
     );
     popup_menu.add_emit(
-        "Switch Branch",
+        "Update to Tag...",
+        Shortcut::None,
+        MenuFlag::Normal,
+        s.clone(),
+        Message::OpenUpdateTag,
+    );
+    popup_menu.add_emit(
+        "Switch Branch...\t",
         Shortcut::None,
         MenuFlag::Normal,
         s.clone(),
         Message::OpenSwitchBranch,
     );
     popup_menu.add_emit(
-        "Commit",
+        "Commit...\t",
         Shortcut::None,
         MenuFlag::Normal | MenuFlag::MenuDivider,
         s.clone(),
         Message::Commit,
     );
     popup_menu.add_emit(
-        "Copy Path",
+        "Copy",
         Shortcut::None,
         MenuFlag::Normal,
         s.clone(),
@@ -937,6 +953,133 @@ fn main() {
                             match res {
                                 Ok(_) => {
                                     r.last_status = "Switched".to_string();
+                                    sender.send(Message::RepoUpdated(r));
+                                }
+                                Err(e) => {
+                                    r.last_status = format!("Error: {}", e);
+                                    sender.send(Message::RepoUpdated(r));
+                                }
+                            }
+                        });
+                        sender.send(Message::SetGlobalStatus("Ready".into()));
+                    });
+                }
+                Message::OpenUpdateTag => {
+                    let sel = get_selected_repos(&browser, &app_state.lock().unwrap());
+                    if sel.is_empty() {
+                        status_bar.set_label("Select repositories to update to tag");
+                        continue;
+                    }
+
+                    status_bar.set_label("Analyzing tags...");
+
+                    use std::collections::HashMap;
+
+                    let mut tag_counts: HashMap<String, usize> = HashMap::new();
+                    let total_sel = sel.len();
+
+                    for r in &sel {
+                        if let Ok(tags) = r.get_all_tags() {
+                            for t in tags {
+                                *tag_counts.entry(t).or_insert(0) += 1;
+                            }
+                        }
+                    }
+
+                    let mut sorted_tags: Vec<(String, usize)> =
+                        tag_counts.into_iter().collect();
+                    // Sort by count (descending) then name (ascending)
+                    sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+                    let tag_names: Vec<String> =
+                        sorted_tags.iter().map(|(n, _)| n.clone()).collect();
+
+                    // Show Dialog
+                    let mut dialog = Window::default()
+                        .with_size(300, 200)
+                        .with_label("Update to Tag");
+                    dialog.set_border(true);
+                    let mut pack = Pack::new(10, 10, 280, 180, "");
+                    pack.set_spacing(10);
+
+                    pack.add(
+                        &Frame::default()
+                            .with_size(0, 20)
+                            .with_label(&format!("Select tag (from {} repos):", total_sel)),
+                    );
+                    let mut choice = fltk::menu::Choice::default().with_size(0, 30);
+                    for (name, count) in &sorted_tags {
+                        let safe_name = name.replace("/", "\\/");
+                        choice.add_choice(&format!("{} ({})", safe_name, count));
+                    }
+                    if !sorted_tags.is_empty() {
+                        choice.set_value(0);
+                    }
+
+                    pack.add(
+                        &Frame::default()
+                            .with_size(0, 20)
+                            .with_label("Or type tag name:"),
+                    );
+                    let input = fltk::input::Input::default().with_size(0, 30);
+
+                    let btn_row = Flex::default().with_size(0, 30).row();
+                    let mut btn_cancel = Button::default().with_label("Close");
+                    let mut btn_ok = Button::default().with_label("Update");
+                    btn_row.end();
+
+                    pack.end();
+                    dialog.end();
+                    dialog.make_modal(true);
+                    dialog.show();
+
+                    let s_clone = s.clone();
+                    let mut d_clone = dialog.clone();
+                    btn_cancel.set_callback(move |_| d_clone.hide());
+
+                    let mut d_clone2 = dialog.clone();
+                    let names_clone = tag_names.clone();
+
+                    btn_ok.set_callback(move |_| {
+                        let idx = choice.value();
+                        let target = if !input.value().is_empty() {
+                            input.value()
+                        } else if idx >= 0 && (idx as usize) < names_clone.len() {
+                            names_clone[idx as usize].clone()
+                        } else {
+                            String::new()
+                        };
+
+                        if !target.is_empty() {
+                            s_clone.send(Message::DoUpdateTag(target));
+                            d_clone2.hide();
+                        }
+                    });
+                }
+                Message::DoUpdateTag(target_tag) => {
+                    let sel = get_selected_repos(&browser, &app_state.lock().unwrap());
+                    if sel.is_empty() {
+                        continue;
+                    }
+
+                    status_bar.set_label(&format!("Updating to {}...", target_tag));
+                    let sender = s.clone();
+
+                    for r in &sel {
+                        sender.send(Message::SetStatus(
+                            r.path.clone(),
+                            "Updating...".to_string(),
+                        ));
+                    }
+
+                    thread::spawn(move || {
+                        sel.par_iter().for_each(|repo| {
+                            let mut r = repo.clone();
+                            let res = r.update_to_tag(&target_tag);
+                            r.refresh();
+                            match res {
+                                Ok(_) => {
+                                    r.last_status = "Updated".to_string();
                                     sender.send(Message::RepoUpdated(r));
                                 }
                                 Err(e) => {

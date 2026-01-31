@@ -129,6 +129,19 @@ impl Repository {
         self.run_hg(&["commit", "-m", message])
     }
 
+    pub fn get_all_tags(&self) -> Result<Vec<String>> {
+        let output = self.run_hg(&["tags"])?;
+        let tags = output.lines()
+            .map(|line| line.split_whitespace().next().unwrap_or("").to_string())
+            .filter(|s| !s.is_empty() && s != "tip")
+            .collect();
+        Ok(tags)
+    }
+
+    pub fn update_to_tag(&self, tag: &str) -> Result<String> {
+        self.run_hg(&["update", tag])
+    }
+
     pub fn update_to_last_public(&self) -> Result<String> {
         let branch = &self.current_branch;
         if branch.starts_with("ERROR") {
