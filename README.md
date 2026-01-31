@@ -1,5 +1,9 @@
 # ManaHg
 
+<div align="center">
+  <img src="assets/ManaHg.png" alt="ManaHg Logo" width="200">
+</div>
+
 A fast, native GUI tool for managing multiple Mercurial (Hg) repositories, written in Rust with FLTK.
 
 ## Features

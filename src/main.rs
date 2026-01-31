@@ -8,6 +8,7 @@ use fltk::{
     frame::Frame,
     group::{Pack, Group, Flex},
     menu::{SysMenuBar, MenuFlag},
+    image::PngImage,
 };
 use fltk_theme::{WidgetTheme, ThemeType, WidgetScheme, SchemeType};
 use std::{
@@ -139,6 +140,11 @@ fn main() {
     let mut wind = Window::default()
         .with_size(1000, 750)
         .with_label("ManaHg");
+
+    // Load Icon
+    if let Ok(image) = PngImage::load("assets/ManaHg.png") {
+        wind.set_icon(Some(image));
+    }
 
     let (s, r) = app::channel::<Message>();
 
