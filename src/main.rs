@@ -214,7 +214,8 @@ fn main() {
     let mut wind = Window::default().with_size(1000, 750).with_label("ManaHg");
 
     // Load Icon
-    if let Ok(image) = PngImage::load("assets/ManaHg.png") {
+    // On embarque l'icône directement dans l'exécutable pour qu'elle s'affiche toujours
+    if let Ok(image) = PngImage::from_data(include_bytes!("../assets/ManaHg.png")) {
         wind.set_icon(Some(image));
     }
 
