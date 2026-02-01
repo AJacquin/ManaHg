@@ -1,0 +1,33 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*" # Se déclenche quand on pousse un tag commençant par 'v' (ex: v0.1.0)
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-windows:
+    name: Release Windows
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # On compile en mode release
+      - name: Build
+        run: cargo build --release --verbose
+
+      # On déplace le fichier généré à la racine pour qu'il soit plus facile à trouver par l'action d'upload
+      - name: Move binary to root
+        run: Move-Item target/release/ManaHg.exe ManaHg.exe
+
+      # On crée la release sur GitHub et on y ajoute le fichier .exe
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ManaHg.exe
+          generate_release_notes: true
