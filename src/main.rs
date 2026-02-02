@@ -368,7 +368,8 @@ fn main() {
             btn.set_label_size(12);
             // Align left to match browser text better
             btn.set_align(fltk::enums::Align::Inside | fltk::enums::Align::Left);
-            btn.emit(s.clone(), Message::Sort(i));
+            // NOTE: Callback removed to avoid conflict with resize. Handled manually in handle()
+            // btn.emit(s.clone(), Message::Sort(i));
             buttons.push(btn);
             x_off += w;
         }
@@ -386,8 +387,8 @@ fn main() {
     browser.set_type(fltk::browser::BrowserType::Multi);
     
     // Resize Logic
-    struct DragState { dragging: bool, idx: usize, start_x: i32, start_w: i32 }
-    let drag_state = Rc::new(RefCell::new(DragState { dragging: false, idx: 0, start_x: 0, start_w: 0 }));
+    struct DragState { dragging: bool, idx: usize, start_x: i32, start_w: i32, pressed_idx: Option<usize> }
+    let drag_state = Rc::new(RefCell::new(DragState { dragging: false, idx: 0, start_x: 0, start_w: 0, pressed_idx: None }));
     
     let btns_rc = Rc::new(RefCell::new(buttons));
     let browser_rc = Rc::new(RefCell::new(browser.clone()));
@@ -451,18 +452,25 @@ fn main() {
                 Event::Push => {
                    let dx = (b.x() + b.w()) - app::event_x();
                    if dx.abs() < 5 {
-                       if app::event_clicks() {
+                       // Double click auto-resize
+                       if app::event_is_click() && app::event_clicks() { // Check double click properly
                            sender.send(Message::AutoResize(i));
                            return true;
                        }
+                       // Begin Drag
                        let mut st = d_state.borrow_mut();
                        st.dragging = true;
                        st.idx = i;
                        st.start_x = app::event_x();
                        st.start_w = b.w();
+                       st.pressed_idx = None; // Reset pressed state if resizing
                        true
                    } else {
-                       false
+                       // Not resizing - treat as potential click
+                       let mut st = d_state.borrow_mut();
+                       st.dragging = false;
+                       st.pressed_idx = Some(i);
+                       false // Let Button handle visual state
                    }
                 },
                 Event::Drag => {
@@ -510,8 +518,18 @@ fn main() {
                     if st.dragging {
                         st.dragging = false;
                         true
+                    } else if st.pressed_idx == Some(i) {
+                         // Check if released inside
+                         let bx = b.x(); let by = b.y(); let bw = b.w(); let bh = b.h();
+                         let ex = app::event_x(); let ey = app::event_y();
+                         if ex >= bx && ex < bx + bw && ey >= by && ey < by + bh {
+                             sender.send(Message::Sort(i));
+                         }
+                         st.pressed_idx = None;
+                         false // Let button finish release visual
                     } else {
-                        false
+                         st.pressed_idx = None;
+                         false
                     }
                 },
                 Event::Leave => {
