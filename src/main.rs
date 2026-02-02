@@ -5,7 +5,7 @@ use fltk::{
     browser::MultiBrowser,
     button::Button,
     dialog,
-    enums::{Color, FrameType, Key, Shortcut},
+    enums::{Color, Cursor, Event, FrameType, Key, Shortcut},
     frame::Frame,
     group::{Flex, Group, Pack},
     image::PngImage,
@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 #[cfg(target_os = "windows")]
 use std::os::windows::process::CommandExt;
 use std::{
+    cell::RefCell,
     path::PathBuf,
+    rc::Rc,
     sync::{Arc, Mutex},
     thread,
 };
@@ -136,6 +138,7 @@ enum Message {
     SetGlobalStatus(String),
     RepoUpdated(Repository),
     Sort(usize), // Column Index
+    AutoResize(usize),
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -348,16 +351,27 @@ fn main() {
     // Actions menu removed from toolbar, now only in Menu Bar and Context Menu
 
     // Header Row (Buttons)
-    let header_group = Group::default().with_size(1000, 24);
-    let col_widths = [450, 150, 80, 80, 100, 140]; // Total 1000
-    let col_names = ["Path", "Branch", "Rev", "Mod", "Phase", "Status"];
-    let mut x_off = 0;
-    for (i, &w) in col_widths.iter().enumerate() {
-        let mut btn = Button::new(x_off, 0, w, 24, col_names[i]);
-        btn.set_frame(FrameType::ThinUpBox);
-        btn.set_label_size(12);
-        btn.emit(s.clone(), Message::Sort(i));
-        x_off += w;
+    let mut header_group = Group::default().with_size(1000, 24);
+    // Shared state for column widths
+    // Reduced last column width to account for scrollbar
+    let col_widths_state = Rc::new(RefCell::new(vec![300, 150, 50, 150, 150, 50, 50, 100]));
+    let col_names = ["Path", "Branch", "Rev", "Hash", "Tags", "Mod", "Phase", "Status"];
+    
+    let mut buttons: Vec<Button> = Vec::new();
+
+    {
+        let widths = col_widths_state.borrow();
+        let mut x_off = 0;
+        for (i, &w) in widths.iter().enumerate() {
+            let mut btn = Button::new(x_off, 0, w, 24, col_names[i]);
+            btn.set_frame(FrameType::ThinUpBox);
+            btn.set_label_size(12);
+            // Align left to match browser text better
+            btn.set_align(fltk::enums::Align::Inside | fltk::enums::Align::Left);
+            btn.emit(s.clone(), Message::Sort(i));
+            buttons.push(btn);
+            x_off += w;
+        }
     }
     header_group.end();
     flex.fixed(&header_group, 24);
@@ -366,10 +380,150 @@ fn main() {
     let mut browser = MultiBrowser::default();
 
     browser.set_column_char('\t');
-    browser.set_column_widths(&col_widths);
+    browser.set_column_widths(&col_widths_state.borrow());
 
     browser.set_text_size(14);
     browser.set_type(fltk::browser::BrowserType::Multi);
+    
+    // Resize Logic
+    struct DragState { dragging: bool, idx: usize, start_x: i32, start_w: i32 }
+    let drag_state = Rc::new(RefCell::new(DragState { dragging: false, idx: 0, start_x: 0, start_w: 0 }));
+    
+    let btns_rc = Rc::new(RefCell::new(buttons));
+    let browser_rc = Rc::new(RefCell::new(browser.clone()));
+    let widths_rc = col_widths_state.clone();
+
+    // Group Resize Handler to auto-resize last column
+    let grp_w_rc = widths_rc.clone();
+    let grp_btns_rc = btns_rc.clone();
+    let grp_brw_rc = browser_rc.clone();
+
+    header_group.resize_callback(move |_g, x, y, w, h| {
+        let mut widths = grp_w_rc.borrow_mut();
+        
+        // Calculate standard columns width
+        let last_idx = widths.len() - 1;
+        let mut fixed_w = 0;
+        for i in 0..last_idx {
+            fixed_w += widths[i];
+        }
+        
+        // Resize last column to fill
+        let scrollbar_w = 20; // Approx scrollbar width
+        let new_last = w - fixed_w - scrollbar_w;
+        if new_last > 10 {
+            widths[last_idx] = new_last;
+        }
+
+        // Apply
+        let mut all_btns = grp_btns_rc.borrow_mut();
+        let mut xs = x;
+        for (i, btn) in all_btns.iter_mut().enumerate() {
+            btn.resize(xs, y, widths[i], h);
+            xs += widths[i];
+        }
+
+        grp_brw_rc.borrow_mut().set_column_widths(&widths);
+    });
+
+    for (i, btn) in btns_rc.borrow_mut().iter_mut().enumerate() {
+        // Last column cannot be dragged/resized manually
+        if i == 7 { continue; }
+
+        let mut btn = btn.clone();
+        let btns = btns_rc.clone();
+        let brw = browser_rc.clone();
+        let w_rc = widths_rc.clone();
+        let d_state = drag_state.clone();
+        let sender = s.clone();
+
+        btn.handle(move |b, ev| {
+            match ev {
+                Event::Move => {
+                    let dx = (b.x() + b.w()) - app::event_x();
+                    if dx.abs() < 5 {
+                        if let Some(mut win) = b.window() { win.set_cursor(Cursor::WE); }
+                    } else {
+                        if let Some(mut win) = b.window() { win.set_cursor(Cursor::Default); }
+                    }
+                    true
+                },
+                Event::Push => {
+                   let dx = (b.x() + b.w()) - app::event_x();
+                   if dx.abs() < 5 {
+                       if app::event_clicks() {
+                           sender.send(Message::AutoResize(i));
+                           return true;
+                       }
+                       let mut st = d_state.borrow_mut();
+                       st.dragging = true;
+                       st.idx = i;
+                       st.start_x = app::event_x();
+                       st.start_w = b.w();
+                       true
+                   } else {
+                       false
+                   }
+                },
+                Event::Drag => {
+                    let st = d_state.borrow_mut();
+                    if st.dragging && st.idx == i {
+                         let diff = app::event_x() - st.start_x;
+                         let new_w = std::cmp::max(10, st.start_w + diff);
+                         
+                         w_rc.borrow_mut()[i] = new_w;
+                         
+                         let mut widths = w_rc.borrow_mut();
+                         
+                         // Re-adjust last column if we resized a normal column
+                         // We need the group width to know how much space remains
+                         let parent_w = if let Some(p) = b.parent() { p.w() } else { 1000 };
+                         
+                         let last_idx = widths.len() - 1;
+                         let mut fixed_w = 0;
+                         for k in 0..last_idx {
+                             fixed_w += widths[k];
+                         }
+                         
+                         let scrollbar_w = 20;
+                         let new_last = parent_w - fixed_w - scrollbar_w;
+                         if new_last > 10 {
+                             widths[last_idx] = new_last;
+                         }
+
+                         let mut xs = if let Some(p) = b.parent() { p.x() } else { 0 };
+                         let mut all_btns = btns.borrow_mut();
+                         for (j, btn_ref) in all_btns.iter_mut().enumerate() {
+                             btn_ref.resize(xs, btn_ref.y(), widths[j], btn_ref.h());
+                             xs += widths[j];
+                         }
+                         
+                         brw.borrow_mut().set_column_widths(&widths);
+                         if let Some(mut win) = b.window() { win.redraw(); }
+                         true
+                    } else {
+                        false
+                    }
+                },
+                Event::Released => {
+                    let mut st = d_state.borrow_mut();
+                    if st.dragging {
+                        st.dragging = false;
+                        true
+                    } else {
+                        false
+                    }
+                },
+                Event::Leave => {
+                    if let Some(mut win) = b.window() {
+                         win.set_cursor(Cursor::Default);
+                    }
+                    false
+                 }
+                _ => false,
+            }
+        });
+    }
     // browser.add("Path\tBranch\tRev\tMod\tPhase\tStatus"); // Removed header line
 
     let sender = s.clone();
@@ -610,7 +764,7 @@ fn main() {
                     }
 
                     // Update header labels
-                    let col_names = ["Path", "Branch", "Rev", "Mod", "Phase", "Status"];
+                    let col_names = ["Path", "Branch", "Rev", "Hash", "Tags", "Mod", "Phase", "Status"];
                     for i in 0..col_names.len() {
                         if let Some(mut widget) = header_group.child(i as i32) {
                             let mut label = col_names[i].to_string();
@@ -1246,6 +1400,57 @@ fn main() {
                 Message::SetGlobalStatus(msg) => {
                     status_bar.set_label(&msg);
                 }
+                Message::AutoResize(col_idx) => {
+                    let mut max_w = 20; // Default min width
+                    fltk::draw::set_font(fltk::enums::Font::Helvetica, 14); // Match browser font
+                    
+                    let repos = app_state.lock().unwrap();
+                    for repo in repos.iter() {
+                         let text = match col_idx {
+                            0 => {
+                                if current_show_full_path {
+                                    repo.path.display().to_string()
+                                } else {
+                                    repo.path.file_name().unwrap_or_default().to_string_lossy().to_string()
+                                }
+                            }
+                            1 => repo.current_branch.clone(),
+                            2 => repo.revision.clone(),
+                            3 => repo.changeset.clone(),
+                            4 => repo.tags.clone(),
+                            5 => if repo.modified { "Yes".to_string() } else { "No".to_string() },
+                            6 => repo.commit_type.clone(),
+                            7 => repo.last_status.clone(),
+                            _ => String::new(),
+                         };
+                         let (w, _) = fltk::draw::measure(&text, true);
+                         if w > max_w { max_w = w; }
+                    }
+                    
+                    // Measure header too
+                    let header_text = match col_idx {
+                        0 => "Path", 1 => "Branch", 2 => "Rev", 3 => "Hash", 4 => "Tags", 5 => "Mod", 6 => "Phase", 7 => "Status", _ => "",
+                    };
+                    let (hw, _) = fltk::draw::measure(header_text, true);
+                    if hw > max_w { max_w = hw; }
+
+                    max_w += 20; // Padding
+                    
+                    // Limit max width to something reasonable
+                    if max_w > 800 { max_w = 800; }
+                    
+                    // Update
+                    col_widths_state.borrow_mut()[col_idx] = max_w;
+                    
+                    let widths = col_widths_state.borrow();
+                    let mut xs = 0;
+                    for (i, btn) in btns_rc.borrow_mut().iter_mut().enumerate() {
+                        btn.resize(xs, btn.y(), widths[i], btn.h());
+                        xs += widths[i];
+                    }
+                    browser.set_column_widths(&widths);
+                    header_group.redraw();
+                }
             }
         }
     }
@@ -1307,8 +1512,15 @@ fn update_browser(browser: &mut MultiBrowser, repos: &[Repository], show_full_pa
         let status = &repo.last_status;
 
         let line = format!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            path_str, repo.current_branch, repo.revision, mod_str, repo.commit_type, status
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            path_str,
+            repo.current_branch,
+            repo.revision,
+            repo.changeset,
+            repo.tags,
+            mod_str,
+            repo.commit_type,
+            status
         );
         browser.add(&line);
     }
@@ -1326,9 +1538,11 @@ fn sort_repos(repos: &mut Vec<Repository>, state: &SortState) {
             0 => a.path.cmp(&b.path),
             1 => a.current_branch.cmp(&b.current_branch), // Branch
             2 => a.revision.cmp(&b.revision),             // Rev
-            3 => a.modified.cmp(&b.modified),             // Mod
-            4 => a.commit_type.cmp(&b.commit_type),       // Phase
-            5 => a.last_status.cmp(&b.last_status),       // Status
+            3 => a.changeset.cmp(&b.changeset),           // Hash
+            4 => a.tags.cmp(&b.tags),                     // Tags
+            5 => a.modified.cmp(&b.modified),             // Mod
+            6 => a.commit_type.cmp(&b.commit_type),       // Phase
+            7 => a.last_status.cmp(&b.last_status),       // Status
             _ => std::cmp::Ordering::Equal,
         };
 

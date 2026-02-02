@@ -12,6 +12,8 @@ pub struct Repository {
     pub modified: bool,
     pub commit_type: String,
     pub last_status: String,
+    pub changeset: String,
+    pub tags: String,
 }
 
 #[allow(dead_code)]
@@ -24,6 +26,8 @@ impl Repository {
             modified: false,
             commit_type: "".to_string(),
             last_status: "".to_string(),
+            changeset: "".to_string(),
+            tags: "".to_string(),
         }
     }
 
@@ -40,6 +44,8 @@ impl Repository {
         }
 
         self.commit_type = self.get_commit_type().unwrap_or_else(|_| "Unknown".to_string());
+        self.changeset = self.get_changeset_hash().unwrap_or_default();
+        self.tags = self.get_commit_tags().unwrap_or_default();
     }
 
     fn run_hg(&self, args: &[&str]) -> Result<String> {
@@ -87,6 +93,14 @@ impl Repository {
             None => Ok(String::new()),
             Some(f) => Ok(f.to_uppercase().collect::<String>() + chars.as_str()),
         }
+    }
+
+    pub fn get_changeset_hash(&self) -> Result<String> {
+        self.run_hg(&["log", "-r", ".", "--template", "{node|short}"])
+    }
+
+    pub fn get_commit_tags(&self) -> Result<String> {
+        self.run_hg(&["log", "-r", ".", "--template", "{tags}"])
     }
 
     pub fn pull_all_branches(&self) -> Result<String> {
